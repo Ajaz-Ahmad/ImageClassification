@@ -1,0 +1,141 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Jun 26 14:08:50 2019
+
+@author: Ajaz
+"""
+
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Jun 23 17:39:24 2019
+
+@author: Ajaz
+"""
+
+import os
+import cv2
+from sklearn.model_selection import train_test_split
+from keras.preprocessing.image import ImageDataGenerator
+from keras.applications.vgg16 import VGG16
+from keras.applications.imagenet_utils import preprocess_input
+from keras.preprocessing import image
+import keras.backend as K
+import pandas as pd
+import numpy as np
+from keras.layers import Conv2D, MaxPooling2D
+from keras.layers import Dense, Dropout, Flatten, GlobalAveragePooling2D
+from keras import models
+from keras.optimizers import SGD,Adam, RMSprop
+from matplotlib import pyplot
+import tensorflow as tf
+W=180
+H=120
+with tf.device('/gpu:0'):
+    
+    def vgg_model():
+        #create model
+        conv_base = VGG16(weights='imagenet', include_top=False, input_shape=(W, H, 3))
+        return conv_base
+    
+    baseDir=input("Enter the path of your dataset folder:")
+    if os.path.isdir(baseDir):
+        chick_dir=os.path.join(baseDir,'Chickens')
+    if not os.path.isdir(chick_dir):
+        print("Path to Chicken Folder dataset cannot be found. Looking for path: "+chick_dir)
+    else:
+        print("Path to Chicken Folder Found successfully")
+    cow_dir=os.path.join(baseDir,'Cows')
+    if not os.path.isdir(cow_dir):
+        print("Path to Cow Folder dataset cannot be found. Looking for path: "+chick_dir)
+    else:
+        print("Path to Cow Folder Found successfully")
+    chick_list=[]
+    cow_list=[]
+    dataframe=pd.DataFrame(columns=['Images','Label'],dtype=np.str)
+    
+    for filename in os.listdir(chick_dir):
+        absolute_path=chick_dir+'/'+filename
+        dataframe=dataframe.append({'Images':absolute_path,'Label':int(0)},ignore_index=True)
+    for filename in os.listdir(cow_dir):
+        absolute_path=cow_dir+'/'+filename
+        dataframe=dataframe.append({'Images':absolute_path,'Label':int(1)},ignore_index=True)
+    #print(dataframe)
+    
+    dataframe['Label']=dataframe['Label'].astype('str')
+    train,test=train_test_split(dataframe,test_size=0.20)
+    
+    datagen=ImageDataGenerator(rescale=1./255,shear_range=0.1,zoom_range=0.1,rotation_range=20,horizontal_flip=True,fill_mode='nearest',validation_split=0.25)
+    train_generator=datagen.flow_from_dataframe(dataframe=train,subset='training', x_col="Images", y_col="Label", class_mode="binary", target_size=(W,H), batch_size=32)
+    valid_generator=datagen.flow_from_dataframe(dataframe=train,subset='validation', x_col="Images", y_col="Label", class_mode="binary", target_size=(W,H), batch_size=16)
+    #build the model
+    conv_base=VGG16(weights='imagenet', include_top=False, input_shape=(W, H, 3))
+    x=conv_base.output
+    x=Flatten()(x)
+    x=Dropout(0.50)(x)
+    x=Dense(256,activation='relu')(x)
+    x=Dropout(0.50)(x)
+    prediction=Dense(1,activation='sigmoid')(x)
+    conv_base.trainable=False
+    model=models.Model(conv_base.input,prediction)
+    base_layers=[]
+    for layer in conv_base.layers:
+        base_layers.append(layer.name)
+    print('Model Summary',model.summary())
+    for layer in model.layers:
+        if layer.name in base_layers:
+            layer.trainable=False
+    #sgd=SGD(0.001,momentum=0.9,decay=1e-6)
+    rms=RMSprop(lr=0.0001, rho=0.9, epsilon=None, decay=0.0)
+    #sgd=SGD(0.01, momentum=0.9,decay=1e-6,nesterov=False)
+    #adam=Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
+    model.compile(loss='binary_crossentropy', optimizer=rms, metrics=['accuracy'])
+    history=model.fit_generator(train_generator,steps_per_epoch=76,epochs=12,validation_steps=51,validation_data=valid_generator)
+    
+    pyplot.plot(history.history['acc'],label='train')
+    pyplot.plot(history.history['val_acc'],label='validation')
+    pyplot.title('model Accuracy')
+    pyplot.ylabel('accuracy')
+    pyplot.xlabel('epoch')
+    pyplot.legend(['train','validation'],loc='upper left')
+    pyplot.show()
+    
+    # summarize history for loss
+    pyplot.plot(history.history['loss'])
+    pyplot.plot(history.history['val_loss'])
+    pyplot.title('model loss')
+    pyplot.ylabel('loss')
+    pyplot.xlabel('epoch')
+    pyplot.legend(['train', 'validation'], loc='upper left')
+    pyplot.show()
+    test_datagen=ImageDataGenerator(rescale=1./255)
+    test_generator=test_datagen.flow_from_dataframe(dataframe=test, x_col="Images", y_col="Label", class_mode="binary", target_size=(W,H),batch_size=45)
+    
+    # finally evaluate this model on the test data
+    results = model.evaluate_generator(test_generator,steps=18)
+    print('Final test accuracy:', (results[1]*100.0))   
+   
+    #HeatMap
+    img=cv2.imread('D:/JOb/data-science-challenge/data/Chickens/37667762_699b7eb2dc.jpg',1)
+    img=cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    pyplot.imshow(img)
+    img=cv2.resize(img,(H,W),interpolation=cv2.INTER_CUBIC)
+    x=image.img_to_array(img)
+    x= np.expand_dims(x, axis=0)
+    x=preprocess_input(x)
+    preds=model.predict(x)
+    find_class_label_main=np.argmax(preds[0])
+    find_class_label = find_class_label_main
+    model.output[:,find_class_label]
+    find_class_output=model.output[:,find_class_label]
+    last_conv_layer=model.get_layer('block5_conv3')
+    grads=K.gradients(find_class_output,last_conv_layer.output)[0]
+    pooled_grads=K.mean(grads,axis=(0,1,2))
+    iterate = K.function([model.input], [pooled_grads, last_conv_layer.output[0]])
+    pooled_grads_value, conv_layer_output_value = iterate([x])
+    pooled_grads=K.mean(grads)
+    iterate = K.function([model.input], [pooled_grads, last_conv_layer.output[0]])
+    pooled_grads_value, conv_layer_output_value = iterate([x])
+    heatmap = np.mean(conv_layer_output_value, axis=-1)
+    heatmap = np.maximum(heatmap, 0)
+    heatmap /= np.max(heatmap)
+    pyplot.matshow(heatmap)
